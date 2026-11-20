@@ -119,6 +119,19 @@ def test_requests_are_answered_and_events_reach_the_hub(fake_hub):
         t.stop()
 
 
+def test_a_request_sent_with_ready_is_answered(fake_hub):
+    fake_hub.with_ready = [{"type": "request", "id": "r0", "action": "echo", "params": {"n": 1}}]
+    link = new_link()
+    t = Ticker(link, lambda rid, action, params: link.respond(rid, result=params))
+    try:
+        fake_hub.wait_link()
+        assert wait(lambda: any(f.get("type") == "response" and f.get("id") == "r0" for f in fake_hub.frames))
+        r = [f for f in fake_hub.frames if f.get("id") == "r0"][0]
+        assert r["ok"] and r["result"] == {"n": 1}
+    finally:
+        t.stop()
+
+
 def test_ping(fake_hub, monkeypatch):
     monkeypatch.setattr(hub, "PING_EVERY", 0.2)
     t = Ticker(new_link())

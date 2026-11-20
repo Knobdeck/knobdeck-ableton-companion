@@ -96,6 +96,7 @@ class Link:
         self._link = None
         self._closed = False
         self._discovery = None
+        self._backlog = []  # messages that arrived together with `ready`
 
     # ── public ──────────────────────────────────────────────────────────
 
@@ -123,7 +124,8 @@ class Link:
                 self._poll_handshake(now)
                 if eof and self._phase in ("upgrading", "hello"):
                     raise ws.Closed("connection closed")
-            elif self._phase == "linked":
+            if self._phase == "linked":
+                # Also right after `ready`: requests that came in the same read are answered now.
                 requests = self._poll_linked(now)
                 self._flush()
                 return requests
@@ -239,7 +241,7 @@ class Link:
             raise OSError(errno.ETIMEDOUT, "KnobDeck didn't answer the link")
 
     def _handle_hello_answer(self, now, messages):
-        for kind, data in messages:
+        for i, (kind, data) in enumerate(messages):
             if kind == "ping":
                 self._out += ws.frame(ws.OP_PONG, data)
             elif kind == "close":
@@ -259,13 +261,15 @@ class Link:
                 self._retry = RETRY_MIN
                 self._last_ping = now
                 self._set_status(state="connected", link=self._link, port=self._discovery["port"])
+                self._backlog = messages[i + 1 :]
                 return
 
     def _poll_linked(self, now):
         eof = self._read()
         data, self._in = self._in, b""
         requests = []
-        for kind, payload in self._decoder.feed(data) if data else []:
+        messages, self._backlog = self._backlog + (self._decoder.feed(data) if data else []), []
+        for kind, payload in messages:
             if kind == "ping":
                 self._out += ws.frame(ws.OP_PONG, payload)
             elif kind == "close":
@@ -340,6 +344,7 @@ class Link:
         self._out = b""
         self._in = b""
         self._decoder = None
+        self._backlog = []
         self._link = None
         self._phase = "idle"
 

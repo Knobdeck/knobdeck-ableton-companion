@@ -39,6 +39,16 @@ def _recv_frame(sock, buf):
         buf += chunk
 
 
+def _frame(text):
+    data = text.encode()
+    n = len(data)
+    return (
+        bytes([0x81])
+        + (bytes([n]) if n < 126 else bytes([126]) + struct.pack("!H", n) if n < 65536 else bytes([127]) + struct.pack("!Q", n))
+        + data
+    )
+
+
 def _send_text(sock, text):
     data = text.encode()
     n = len(data)
@@ -67,6 +77,7 @@ class FakeHub:
         self.order = []
         self.frames = []  # every frame companions sent
         self.refusals = []
+        self.with_ready = []  # frames sent together with `ready`
         self._pending = {}
         self._next = 1
         self._lock = threading.Lock()
@@ -155,7 +166,13 @@ class FakeHub:
                 if link in self.order:
                     self.order.remove(link)
                 self.order.append(link)
-            conn.send({"type": "ready", "protocol": 1, "link": link, "host_version": "test"})
+            ready = {"type": "ready", "protocol": 1, "link": link, "host_version": "test"}
+            if self.with_ready:
+                # A request in the same TCP write as `ready` (a fast hub; the companion must keep it).
+                with conn.lock:
+                    sock.sendall(_frame(json.dumps(ready)) + b"".join(_frame(json.dumps(m)) for m in self.with_ready))
+            else:
+                conn.send(ready)
             if self.on_connect:
                 self.on_connect(link, hello)
             while True:
