@@ -1,0 +1,90 @@
+name: CI
+
+# Pushes to master run this through the Release workflow (release.yml), not on their own.
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      plugins_ref:
+        description: knobdeck-plugins branch or tag to test against
+        default: master
+  workflow_call:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install ruff==0.17.5
+      - run: ruff check .
+      - run: ruff format --check .
+
+  test:
+    name: Python ${{ matrix.python }} on ${{ matrix.os }}
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Live 11 runs Python 3.7, Live 12 runs 3.11. Live runs on Windows and macOS; Linux is
+          # here for 3.7 (setup-python has no 3.7 on the newer images).
+          - { os: ubuntu-22.04, python: "3.7" }
+          - { os: ubuntu-latest, python: "3.11" }
+          - { os: windows-latest, python: "3.11" }
+          - { os: macos-latest, python: "3.11" }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install pytest
+      - name: Remote Script tests (fake hub, fake Live)
+        run: python -m pytest -v
+
+  e2e:
+    name: End to end with the ableton plugin
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The KnobDeck `ableton` plugin, built from source, so the end-to-end test drives the real thing.
+      - uses: actions/checkout@v4
+        with:
+          repository: Knobdeck/knobdeck-plugins
+          ref: ${{ inputs.plugins_ref || 'master' }}
+          path: knobdeck-plugins
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pytest
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: knobdeck-plugins
+      - name: Build the KnobDeck ableton plugin
+        working-directory: knobdeck-plugins
+        run: cargo build -p ableton
+      - name: Plugin, fake hub and Remote Script
+        env:
+          KNOBDECK_ABLETON_PLUGIN: knobdeck-plugins/target/debug/ableton
+        run: python -m pytest -v tests/test_e2e_plugin.py
+
+  package:
+    needs: [test, e2e]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Zip the Remote Script folder
+        run: |
+          version=$(python3 -c 'import re; print(re.search(r"VERSION = \"([^\"]+)\"", open("KnobDeck/version.py").read()).group(1))')
+          mkdir -p dist
+          zip -r -X "dist/knobdeck-ableton-$version.zip" KnobDeck -x '*/__pycache__/*' '*.pyc'
+          unzip -l "dist/knobdeck-ableton-$version.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: knobdeck-ableton-companion
+          path: dist/knobdeck-ableton-*.zip

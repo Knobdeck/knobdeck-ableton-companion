@@ -1,0 +1,75 @@
+# Every push to master runs this. When the version in KnobDeck/version.py has no release yet, it
+# runs CI, creates the tag v<version> and a GitHub release with the Remote Script zip
+# (knobdeck-ableton-<version>.zip, the KnobDeck/ folder), which the ableton plugin's setup
+# downloads. A push that doesn't bump the version only runs CI. Live has no add-on store.
+name: Release
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency: release
+
+jobs:
+  ci:
+    if: github.ref == 'refs/heads/master'
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # tag and GitHub release
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      published: ${{ steps.tag.outputs.published }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        run: echo "version=$(python3 -c 'import re; print(re.search(r"VERSION = \"([^\"]+)\"", open("KnobDeck/version.py").read()).group(1))')" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v4
+        with:
+          name: knobdeck-ableton-companion
+          path: dist
+      - name: Tag and GitHub release
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          tag="v$VERSION"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "::notice::$tag is already released; bump VERSION in KnobDeck/version.py to ship this push"
+            exit 0
+          fi
+          awk '/^## /{n++} n==1' CHANGELOG.md | tail -n +2 > notes.md
+          gh release create "$tag" "dist/knobdeck-ableton-$VERSION.zip" --target "$GITHUB_SHA" \
+            --title "KnobDeck Remote Script for Ableton Live $VERSION" --notes-file notes.md
+          echo "published=true" >> "$GITHUB_OUTPUT"
+
+  catalog:
+    # Tells the knobdeck-registry catalog to rebuild. Skipped until the catalog GitHub App is set up
+    # (CATALOG_APP_ID variable, CATALOG_APP_PRIVATE_KEY secret).
+    needs: release
+    if: needs.release.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Catalog app token
+        id: app
+        if: vars.CATALOG_APP_ID != ''
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.CATALOG_APP_ID }}
+          private-key: ${{ secrets.CATALOG_APP_PRIVATE_KEY }}
+          owner: Knobdeck
+          repositories: knobdeck-registry
+      - name: Tell the catalog
+        if: steps.app.outputs.token != ''
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          jq -n --arg repo "$GITHUB_REPOSITORY" --arg id "ableton" --arg version "$VERSION" \
+            '{event_type: "companion-released", client_payload: {repo: $repo, id: $id, version: $version}}' |
+            gh api repos/Knobdeck/knobdeck-registry/dispatches --input -

@@ -1,0 +1,15 @@
+# Lint and test settings only: the Remote Script is plain Python files Live loads from its folder.
+#   ruff check . && ruff format --check . && pytest
+[tool.ruff]
+line-length = 140
+target-version = "py37" # Live 11's Python; Live 12 runs 3.11
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "I"]
+ignore = ["E741", "E731", "E501", "B904"] # long lines: the formatter wraps what it can
+
+[tool.ruff.lint.isort]
+known-first-party = ["KnobDeck", "fake_hub", "fake_live", "plugin_host"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
